@@ -1,0 +1,10 @@
+# Example values for the full-baseline deployment.
+# Copy to `terraform.tfvars` and adjust as needed.
+
+aws_region   = "us-east-1"
+environment  = "prod"
+project_name = "security-baseline"
+
+# Where GuardDuty alerts will be delivered (SNS email subscription).
+alert_email = "security-alerts@example.com"
+

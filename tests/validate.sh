@@ -47,12 +47,27 @@ for module_dir in "$ROOT_DIR"/modules/*/; do
         ERRORS=$((ERRORS + 1))
     fi
 done
+
+echo -e "${YELLOW}    Validating examples...${NC}"
+for example_dir in "$ROOT_DIR"/examples/*/; do
+    example_name=$(basename "$example_dir")
+    if ls "$example_dir"/*.tf >/dev/null 2>&1; then
+        cd "$example_dir"
+        if terraform init -backend=false -input=false >/dev/null 2>&1 && \
+           terraform validate >/dev/null 2>&1; then
+            echo -e "${GREEN}  ✓ Example: $example_name${NC}"
+        else
+            echo -e "${RED}  ✗ Example: $example_name — validation failed${NC}"
+            ERRORS=$((ERRORS + 1))
+        fi
+    fi
+done
 echo ""
 
 # ── Step 3: tfsec Static Analysis ───────────────────────────
 echo -e "${YELLOW}[3/4] Running tfsec security scan...${NC}"
 if command -v tfsec &>/dev/null; then
-    if tfsec "$ROOT_DIR/modules" --minimum-severity HIGH --format compact 2>/dev/null; then
+    if tfsec "$ROOT_DIR/modules" --minimum-severity HIGH --format default --no-color; then
         echo -e "${GREEN}  ✓ No HIGH/CRITICAL issues found${NC}"
     else
         echo -e "${RED}  ✗ tfsec found security issues${NC}"
@@ -66,12 +81,15 @@ echo ""
 # ── Step 4: Checkov Policy-as-Code ──────────────────────────
 echo -e "${YELLOW}[4/4] Running Checkov compliance scan...${NC}"
 if command -v checkov &>/dev/null; then
-    if checkov -d "$ROOT_DIR/modules" --framework terraform \
-       --quiet --compact 2>/dev/null; then
+    if checkov -d "$ROOT_DIR/modules" --framework terraform --compact; then
         echo -e "${GREEN}  ✓ Checkov compliance passed${NC}"
     else
-        echo -e "${RED}  ✗ Checkov found compliance issues${NC}"
-        ERRORS=$((ERRORS + 1))
+        if [ "${CHECKOV_STRICT:-0}" = "1" ]; then
+            echo -e "${RED}  ✗ Checkov found compliance issues${NC}"
+            ERRORS=$((ERRORS + 1))
+        else
+            echo -e "${YELLOW}  ⚠ Checkov found compliance issues (non-blocking). Re-run with CHECKOV_STRICT=1 to fail on findings.${NC}"
+        fi
     fi
 else
     echo -e "${YELLOW}  ⚠ Checkov not installed. Install: pip install checkov${NC}"

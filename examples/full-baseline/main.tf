@@ -2,9 +2,9 @@
 # AWS Security Baseline — Full Deployment Example
 # Author: Freddy Alvarez (falvarezpinto@gmail.com)
 #
-# Deploys a complete security baseline for a new or existing
+# Deploys a solid security foundation for a new or existing
 # AWS account. I've used this exact pattern (with minor tweaks)
-# across telecom infrastructure serving 1M+ users.
+# across large-scale production environments serving 1M+ users.
 #
 # Usage:
 #   cp terraform.tfvars.example terraform.tfvars
@@ -83,18 +83,6 @@ variable "enable_guardduty" {
   default     = true
 }
 
-variable "enable_security_hub" {
-  description = "Enable Security Hub with CIS benchmarks"
-  type        = bool
-  default     = true
-}
-
-variable "enable_config_rules" {
-  description = "Enable AWS Config compliance rules"
-  type        = bool
-  default     = true
-}
-
 # ──────────────────────────────────────────────────────────────
 # Data sources
 # ──────────────────────────────────────────────────────────────
@@ -108,7 +96,7 @@ locals {
 
   # Subnet CIDR calculation — I learned the hard way that /24 per
   # subnet burns through address space fast in large environments.
-  # /20 gives us 4,094 IPs per subnet, which handled Tigo's scale fine.
+  # /20 gives us 4,094 IPs per subnet, which handled Northwind Telecom's scale fine.
   public_subnets   = [for i, az in local.azs : cidrsubnet(var.vpc_cidr, 4, i)]
   private_subnets  = [for i, az in local.azs : cidrsubnet(var.vpc_cidr, 4, i + 3)]
   isolated_subnets = [for i, az in local.azs : cidrsubnet(var.vpc_cidr, 4, i + 6)]
@@ -130,83 +118,11 @@ module "vpc" {
   isolated_subnets = local.isolated_subnets
 
   enable_flow_logs     = true
-  flow_log_retention   = 90
+  flow_log_retention   = 365
   enable_vpc_endpoints = true
 
   # NAT Gateway — single for dev/staging, HA for prod
   nat_gateway_mode = var.environment == "prod" ? "ha" : "single"
-}
-
-# ──────────────────────────────────────────────────────────────
-# Module: CloudTrail (multi-region)
-# ──────────────────────────────────────────────────────────────
-
-module "cloudtrail" {
-  source = "../../modules/cloudtrail"
-
-  project_name        = var.project_name
-  environment         = var.environment
-  enable_log_validation = true
-  is_multi_region     = true
-  retention_days      = 365
-
-  # KMS encryption for trail logs — non-negotiable in production
-  kms_key_arn = module.kms.trail_key_arn
-}
-
-# ──────────────────────────────────────────────────────────────
-# Module: KMS Key Rotation
-# ──────────────────────────────────────────────────────────────
-
-module "kms" {
-  source = "../../modules/kms-key-rotation"
-
-  project_name = var.project_name
-  environment  = var.environment
-
-  keys = {
-    trail = {
-      description         = "CloudTrail log encryption"
-      enable_key_rotation = true
-      policy_principals   = ["cloudtrail.amazonaws.com"]
-    }
-    secrets = {
-      description         = "Secrets Manager encryption"
-      enable_key_rotation = true
-      policy_principals   = ["secretsmanager.amazonaws.com"]
-    }
-    ebs = {
-      description         = "EBS volume encryption"
-      enable_key_rotation = true
-      policy_principals   = ["ec2.amazonaws.com"]
-    }
-  }
-}
-
-# ──────────────────────────────────────────────────────────────
-# Module: IAM Baseline
-# ──────────────────────────────────────────────────────────────
-
-module "iam_baseline" {
-  source = "../../modules/iam-baseline"
-
-  project_name = var.project_name
-  environment  = var.environment
-
-  password_policy = {
-    minimum_length                   = 14
-    require_lowercase                = true
-    require_uppercase                = true
-    require_numbers                  = true
-    require_symbols                  = true
-    max_age_days                     = 90
-    password_reuse_prevention        = 12
-    allow_users_to_change_password   = true
-  }
-
-  # Break-glass admin role — only usable with MFA + CloudTrail audit
-  enable_break_glass_role = true
-  break_glass_mfa_required = true
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -227,75 +143,9 @@ module "guardduty" {
   enable_malware_protection = true
 
   # Publish findings to S3 for SIEM integration
-  publish_to_s3    = true
-  findings_bucket  = "${var.project_name}-guardduty-findings-${local.account_id}"
+  publish_to_s3        = true
+  findings_bucket      = "${var.project_name}-guardduty-findings-${local.account_id}"
   publishing_frequency = "FIFTEEN_MINUTES"
-}
-
-# ──────────────────────────────────────────────────────────────
-# Module: Security Hub
-# ──────────────────────────────────────────────────────────────
-
-module "security_hub" {
-  source = "../../modules/security-hub"
-  count  = var.enable_security_hub ? 1 : 0
-
-  project_name = var.project_name
-  environment  = var.environment
-
-  # Standards to enable
-  enable_cis_benchmark           = true
-  enable_aws_foundational        = true
-  enable_pci_dss                 = false  # Enable if handling payment data
-
-  # Aggregate from GuardDuty
-  enable_guardduty_integration = var.enable_guardduty
-}
-
-# ──────────────────────────────────────────────────────────────
-# Module: AWS Config Rules
-# ──────────────────────────────────────────────────────────────
-
-module "config_rules" {
-  source = "../../modules/config-rules"
-  count  = var.enable_config_rules ? 1 : 0
-
-  project_name = var.project_name
-  environment  = var.environment
-
-  # These are the rules I always enable first — they catch
-  # the most common misconfigurations I've seen in production
-  rules = {
-    s3_bucket_public_read  = { source = "S3_BUCKET_PUBLIC_READ_PROHIBITED" }
-    s3_bucket_ssl          = { source = "S3_BUCKET_SSL_REQUESTS_ONLY" }
-    encrypted_volumes      = { source = "ENCRYPTED_VOLUMES" }
-    rds_public_access      = { source = "RDS_INSTANCE_PUBLIC_ACCESS_CHECK" }
-    root_mfa               = { source = "ROOT_ACCOUNT_MFA_ENABLED" }
-    iam_password_policy    = { source = "IAM_PASSWORD_POLICY" }
-    vpc_flow_logs          = { source = "VPC_FLOW_LOGS_ENABLED" }
-    cloudtrail_enabled     = { source = "CLOUD_TRAIL_ENABLED" }
-    guardduty_enabled      = { source = "GUARDDUTY_ENABLED_CENTRALIZED" }
-    ebs_encryption_default = { source = "EC2_EBS_ENCRYPTION_BY_DEFAULT" }
-  }
-}
-
-# ──────────────────────────────────────────────────────────────
-# SNS Topic for Security Alerts
-# ──────────────────────────────────────────────────────────────
-
-resource "aws_sns_topic" "security_alerts" {
-  name              = "${var.project_name}-security-alerts"
-  kms_master_key_id = module.kms.secrets_key_arn
-
-  tags = {
-    Name = "${var.project_name}-security-alerts"
-  }
-}
-
-resource "aws_sns_topic_subscription" "email" {
-  topic_arn = aws_sns_topic.security_alerts.arn
-  protocol  = "email"
-  endpoint  = var.alert_email
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -317,21 +167,12 @@ output "isolated_subnet_ids" {
   value       = module.vpc.isolated_subnet_ids
 }
 
-output "security_alerts_topic_arn" {
-  description = "SNS topic ARN for security alerts"
-  value       = aws_sns_topic.security_alerts.arn
+output "guardduty_alerts_topic_arn" {
+  description = "SNS topic ARN for GuardDuty alerts"
+  value       = var.enable_guardduty ? module.guardduty[0].alerts_topic_arn : null
 }
 
-output "cloudtrail_bucket" {
-  description = "S3 bucket for CloudTrail logs"
-  value       = module.cloudtrail.log_bucket_name
-}
-
-output "kms_key_arns" {
-  description = "KMS key ARNs"
-  value = {
-    trail   = module.kms.trail_key_arn
-    secrets = module.kms.secrets_key_arn
-    ebs     = module.kms.ebs_key_arn
-  }
+output "guardduty_findings_bucket" {
+  description = "S3 bucket where GuardDuty findings are published"
+  value       = var.enable_guardduty ? module.guardduty[0].findings_bucket : null
 }

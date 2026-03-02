@@ -14,10 +14,32 @@ variable "azs" { type = list(string) }
 variable "public_subnets" { type = list(string) }
 variable "private_subnets" { type = list(string) }
 variable "isolated_subnets" { type = list(string) }
-variable "enable_flow_logs" { type = bool; default = true }
-variable "flow_log_retention" { type = number; default = 90 }
-variable "enable_vpc_endpoints" { type = bool; default = true }
-variable "nat_gateway_mode" { type = string; default = "single" } # "single" or "ha"
+
+variable "enable_flow_logs" {
+  type    = bool
+  default = true
+}
+
+variable "flow_log_retention" {
+  type    = number
+  default = 365
+}
+
+variable "flow_logs_kms_key_id" {
+  description = "KMS key ID/alias for encrypting the VPC flow logs CloudWatch Log Group"
+  type        = string
+  default     = "alias/aws/logs"
+}
+
+variable "enable_vpc_endpoints" {
+  type    = bool
+  default = true
+}
+
+variable "nat_gateway_mode" {
+  type    = string
+  default = "single"
+} # "single" or "ha"
 
 # ── VPC ──────────────────────────────────────────────────────
 
@@ -188,6 +210,7 @@ resource "aws_cloudwatch_log_group" "flow_logs" {
   count             = var.enable_flow_logs ? 1 : 0
   name              = "/vpc/${var.project_name}-${var.environment}/flow-logs"
   retention_in_days = var.flow_log_retention
+  kms_key_id        = var.flow_logs_kms_key_id
 
   tags = { Name = "${var.project_name}-${var.environment}-flow-logs" }
 }
@@ -199,13 +222,14 @@ resource "aws_iam_role" "flow_logs" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "vpc-flow-logs.amazonaws.com" }
     }]
   })
 }
 
+#tfsec:ignore:aws-iam-no-policy-wildcards -- CloudWatch log stream names are created by the VPC Flow Logs service, so the policy must allow a scoped wildcard.
 resource "aws_iam_role_policy" "flow_logs" {
   count = var.enable_flow_logs ? 1 : 0
   name  = "flow-logs-policy"
@@ -215,24 +239,22 @@ resource "aws_iam_role_policy" "flow_logs" {
     Version = "2012-10-17"
     Statement = [{
       Action = [
-        "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:PutLogEvents",
-        "logs:DescribeLogGroups",
         "logs:DescribeLogStreams"
       ]
       Effect   = "Allow"
-      Resource = "*"
+      Resource = "${aws_cloudwatch_log_group.flow_logs[0].arn}:log-stream:*"
     }]
   })
 }
 
 resource "aws_flow_log" "main" {
-  count                = var.enable_flow_logs ? 1 : 0
-  vpc_id               = aws_vpc.main.id
-  traffic_type         = "ALL"
-  iam_role_arn         = aws_iam_role.flow_logs[0].arn
-  log_destination      = aws_cloudwatch_log_group.flow_logs[0].arn
+  count                    = var.enable_flow_logs ? 1 : 0
+  vpc_id                   = aws_vpc.main.id
+  traffic_type             = "ALL"
+  iam_role_arn             = aws_iam_role.flow_logs[0].arn
+  log_destination          = aws_cloudwatch_log_group.flow_logs[0].arn
   max_aggregation_interval = 60 # 1-minute granularity for faster detection
 
   tags = { Name = "${var.project_name}-${var.environment}-flow-log" }
@@ -241,9 +263,9 @@ resource "aws_flow_log" "main" {
 # ── VPC Endpoints (keep traffic off the internet) ────────────
 
 resource "aws_vpc_endpoint" "s3" {
-  count           = var.enable_vpc_endpoints ? 1 : 0
-  vpc_id          = aws_vpc.main.id
-  service_name    = "com.amazonaws.${data.aws_region.current.name}.s3"
+  count             = var.enable_vpc_endpoints ? 1 : 0
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids = concat(
     [aws_route_table.public.id],
@@ -254,9 +276,9 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 resource "aws_vpc_endpoint" "dynamodb" {
-  count           = var.enable_vpc_endpoints ? 1 : 0
-  vpc_id          = aws_vpc.main.id
-  service_name    = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
+  count             = var.enable_vpc_endpoints ? 1 : 0
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
   vpc_endpoint_type = "Gateway"
   route_table_ids = concat(
     [aws_route_table.public.id],

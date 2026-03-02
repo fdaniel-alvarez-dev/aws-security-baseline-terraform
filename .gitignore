@@ -8,3 +8,10 @@ Thumbs.db
 # Temporales
 *.log
 __pycache__/
+
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log

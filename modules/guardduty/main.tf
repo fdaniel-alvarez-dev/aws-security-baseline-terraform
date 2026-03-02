@@ -6,15 +6,118 @@
 variable "project_name" { type = string }
 variable "environment" { type = string }
 variable "alert_email" { type = string }
-variable "enable_s3_protection" { type = bool; default = true }
-variable "enable_eks_protection" { type = bool; default = true }
-variable "enable_malware_protection" { type = bool; default = true }
-variable "publish_to_s3" { type = bool; default = true }
-variable "findings_bucket" { type = string; default = "" }
-variable "publishing_frequency" { type = string; default = "FIFTEEN_MINUTES" }
+
+variable "enable_s3_protection" {
+  type    = bool
+  default = true
+}
+
+variable "enable_eks_protection" {
+  type    = bool
+  default = true
+}
+
+variable "enable_malware_protection" {
+  type    = bool
+  default = true
+}
+
+variable "publish_to_s3" {
+  type    = bool
+  default = true
+}
+
+variable "findings_bucket" {
+  type    = string
+  default = ""
+}
+
+variable "publishing_frequency" {
+  type    = string
+  default = "FIFTEEN_MINUTES"
+}
+
+variable "sns_kms_master_key_id" {
+  description = "Optional KMS key ARN/ID for encrypting the GuardDuty alerts SNS topic (defaults to a module-managed CMK)"
+  type        = string
+  default     = ""
+}
+
+variable "s3_kms_master_key_id" {
+  description = "Optional KMS key ARN/ID for encrypting the GuardDuty findings S3 bucket (defaults to a module-managed CMK)"
+  type        = string
+  default     = ""
+}
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
+
+resource "aws_kms_key" "guardduty" {
+  description         = "KMS CMK for GuardDuty findings and alerting"
+  enable_key_rotation = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableAccountRootPermissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowSnsUseOfKey"
+        Effect = "Allow"
+        Principal = {
+          Service = "sns.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+          ArnLike = {
+            "aws:SourceArn" = "arn:aws:sns:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:${var.project_name}-${var.environment}-guardduty-alerts"
+          }
+        }
+      },
+      {
+        Sid    = "AllowS3UseOfKey"
+        Effect = "Allow"
+        Principal = {
+          Service = "s3.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_kms_alias" "guardduty" {
+  name          = "alias/${var.project_name}-${var.environment}-guardduty"
+  target_key_id = aws_kms_key.guardduty.key_id
+}
+
+locals {
+  sns_kms_master_key_id = var.sns_kms_master_key_id != "" ? var.sns_kms_master_key_id : aws_kms_key.guardduty.arn
+  s3_kms_master_key_id  = var.s3_kms_master_key_id != "" ? var.s3_kms_master_key_id : aws_kms_key.guardduty.arn
+}
 
 resource "aws_guardduty_detector" "main" {
   enable                       = true
@@ -62,7 +165,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "findings" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "aws:kms"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = local.s3_kms_master_key_id
     }
     bucket_key_enabled = true
   }
@@ -110,8 +214,9 @@ resource "aws_s3_bucket_policy" "findings" {
 # ── SNS Alert on High-Severity Findings ──────────────────────
 
 resource "aws_sns_topic" "guardduty_alerts" {
-  name = "${var.project_name}-${var.environment}-guardduty-alerts"
-  tags = { Name = "${var.project_name}-guardduty-alerts" }
+  name              = "${var.project_name}-${var.environment}-guardduty-alerts"
+  kms_master_key_id = local.sns_kms_master_key_id
+  tags              = { Name = "${var.project_name}-guardduty-alerts" }
 }
 
 resource "aws_sns_topic_subscription" "email" {
