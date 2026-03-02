@@ -1,0 +1,10 @@
+
+# Windows Zone Identifier files
+*:Zone.Identifier
+Thumbs.db
+.DS_Store
+*.Identifier
+
+# Temporales
+*.log
+__pycache__/
