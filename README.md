@@ -119,8 +119,8 @@ Found a security improvement? Open an issue or PR. I'm particularly interested i
 
 ## Author
 
-**Freddy Alvarez** — Senior Cloud Infrastructure Architect with 22+ years building and securing production systems. Currently pursuing a PhD in Cloud Computing Security.
+**Freddy Alvarez** — Senior Cloud Infrastructure Architect with 22+ years building and securing production systems. 
 
-- [LinkedIn](https://linkedin.com/in/falvarezpinto)
+- [LinkedIn](https://www.linkedin.com/in/freddy-daniel-alvarez/)
 - [Medium](https://medium.com/@falvarezpinto) — 26 articles on cloud, DevOps, and AI infrastructure
 - [GitHub](https://github.com/fdaniel-alvarez-dev)
